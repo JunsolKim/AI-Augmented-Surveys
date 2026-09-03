@@ -1,0 +1,48 @@
+# Conda environment for the AI-Augmented Surveys replication package
+# (Python pipeline, stages 1-5, and the R figure scripts).
+#
+# Create with:  conda env create -f environment.yml
+# Activate:     conda activate ai-augmented-surveys
+name: ai-augmented-surveys
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+
+  # --- R and the packages used by 4_figures-tables/*.R ---
+  # r-estimatr is installed by setup.sh (no conda-forge build on every platform).
+  - r-base>=4.3
+  - r-arrow
+  - r-broom
+  - r-data.table
+  - r-ggplot2
+  - r-ggsci
+  - r-modelsummary
+
+  - pip
+  - pip:
+      # --- core data / numerics ---
+      - numpy==2.1.3
+      - pandas==2.2.3
+      - pyarrow==17.0.0
+      - scipy==1.14.1
+      - scikit-learn==1.5.2
+      - statsmodels==0.14.4
+      - patsy==1.0.1
+      - fire                               # CLI entry points in stage 1/3 scripts
+      - tiktoken                           # token counts in prep_alpaca_examples.py (Table A3)
+      - sentencepiece                      # Alpaca (Llama) tokenizer load in prep_alpaca_examples.py
+      # --- plotting (figures) ---
+      - matplotlib==3.9.2
+      - seaborn==0.13.2
+      - adjustText==1.3.0
+      # --- pipeline orchestration ---
+      - snakemake>=8
+      - snakemake-executor-plugin-slurm   # only for the SLURM profile
+      # --- model training / fine-tuning (stages 2 & 5; GPU) ---
+      - tensorflow==2.19.0                 # DCN (set TF_USE_LEGACY_KERAS=1)
+      - torch==2.7.0                       # LLM LoRA fine-tuning (stage 5)
+      - transformers==4.57.3
+      - peft==0.12.0
+      - tensorflow-recommenders            # DCN model (2_model-finetuning/models.py)
+      - sentence-transformers              # SBERT matching (roper / concat-MF)

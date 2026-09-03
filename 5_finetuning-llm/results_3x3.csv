@@ -1,0 +1,28 @@
+metric,task,model,value
+AUC,Missing data imputation,baseline,0.8681
+AUC,Missing data imputation,lora_qv,0.8688
+AUC,Missing data imputation,lora_all_linear,0.8686
+AUC,Retrodiction,baseline,0.8287
+AUC,Retrodiction,lora_qv,0.8288
+AUC,Retrodiction,lora_all_linear,0.8286
+AUC,Unasked opinion prediction,baseline,0.6707
+AUC,Unasked opinion prediction,lora_qv,0.6718
+AUC,Unasked opinion prediction,lora_all_linear,0.6775
+Accuracy,Missing data imputation,baseline,0.7812
+Accuracy,Missing data imputation,lora_qv,0.7811
+Accuracy,Missing data imputation,lora_all_linear,0.7819
+Accuracy,Retrodiction,baseline,0.7394
+Accuracy,Retrodiction,lora_qv,0.7394
+Accuracy,Retrodiction,lora_all_linear,0.7384
+Accuracy,Unasked opinion prediction,baseline,0.6196
+Accuracy,Unasked opinion prediction,lora_qv,0.6254
+Accuracy,Unasked opinion prediction,lora_all_linear,0.6272
+F1,Missing data imputation,baseline,0.7789
+F1,Missing data imputation,lora_qv,0.7776
+F1,Missing data imputation,lora_all_linear,0.7814
+F1,Retrodiction,baseline,0.7382
+F1,Retrodiction,lora_qv,0.7330
+F1,Retrodiction,lora_all_linear,0.7300
+F1,Unasked opinion prediction,baseline,0.6417
+F1,Unasked opinion prediction,lora_qv,0.6401
+F1,Unasked opinion prediction,lora_all_linear,0.6214

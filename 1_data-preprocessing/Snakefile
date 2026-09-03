@@ -1,0 +1,147 @@
+configfile: "config.yaml"
+
+DATA = config["data_dir"]
+TRAIN_VARS = config["external"]["train_vars"]
+CORR_TARGET = config["correlation_target"]
+
+# step9 saves as weights/{hf_path_with_slashes_to_underscores}.pkl
+MODEL_HF = config["embedding_models"]                 # short -> hf path
+SAFE_TO_SHORT = {hf.replace("/", "_"): short for short, hf in MODEL_HF.items()}
+MODEL_SAFE = list(SAFE_TO_SHORT.keys())
+
+DICT_NAMES = [
+    "var_description",
+    "var_question",
+    "online_value_label",
+    "module",
+    "subject_to_var",
+    "var_to_subject",
+]
+DICTS = expand(f"{DATA}/{{name}}_dict.pkl", name=DICT_NAMES)
+
+
+rule all:
+    input:
+        expand(f"{DATA}/weights/{{safe_name}}.pkl", safe_name=MODEL_SAFE),
+        f"{DATA}/demographics.parquet",
+        f"{DATA}/demographics_long.csv",
+        f"{DATA}/variable_prompts.parquet",
+        f"{DATA}/missing_mask_mar.parquet",
+        f"{DATA}/missing_mask_mnar.parquet",
+        f"{DATA}/corr_with_{CORR_TARGET}.parquet",
+
+
+rule collect_metadata:
+    output:
+        f"{DATA}/meta_results.pkl",
+    shell:
+        "python step1_collect_gss_metadata.py"
+
+
+rule create_dicts:
+    input:
+        f"{DATA}/meta_results.pkl",
+    output:
+        DICTS,
+    shell:
+        "python step2_create_value_label_dicts.py"
+
+
+rule download_gss:
+    output:
+        f"{DATA}/gss7221_r2.dta",
+    shell:
+        "bash step3_download_gss_data.sh"
+
+
+rule merge_data:
+    input:
+        f"{DATA}/gss7221_r2.dta",
+    output:
+        f"{DATA}/gss_df_merged.parquet",
+    shell:
+        "python step4_merge_data.py"
+
+
+rule convert_long:
+    input:
+        merged=f"{DATA}/gss_df_merged.parquet",
+        dicts=DICTS,
+        train_vars=TRAIN_VARS,
+    output:
+        f"{DATA}/gss_qna_all.parquet",
+    shell:
+        "python step5_convert_to_long.py"
+
+
+rule analysis_data:
+    input:
+        qna=f"{DATA}/gss_qna_all.parquet",
+        train_vars=TRAIN_VARS,
+    output:
+        f"{DATA}/df_analysis.pkl",
+    shell:
+        "python step6_create_analysis_data.py"
+
+
+rule demographics:
+    input:
+        f"{DATA}/df_analysis.pkl",
+    output:
+        f"{DATA}/demographics.parquet",
+        f"{DATA}/demographics_long.csv",
+    shell:
+        "python step7_generate_demographics.py"
+
+
+rule prompts:
+    input:
+        TRAIN_VARS,
+    output:
+        f"{DATA}/variable_prompts.parquet",
+    shell:
+        "python step8_generate_prompts.py"
+
+
+rule embeddings:
+    input:
+        df=f"{DATA}/df_analysis.pkl",
+        demo=f"{DATA}/demographics_long.csv",
+    output:
+        f"{DATA}/weights/{{safe_name}}.pkl",
+    params:
+        short=lambda wc: SAFE_TO_SHORT[wc.safe_name],
+        hf_path=lambda wc: MODEL_HF[SAFE_TO_SHORT[wc.safe_name]],
+    shell:
+        "python step9_generate_embeddings.py {params.short} --model_name={params.hf_path}"
+
+
+rule slim_analysis:
+    input:
+        f"{DATA}/df_analysis.pkl",
+    output:
+        f"{DATA}/df_analysis_slim.pkl",
+    shell:
+        "python step10_slim_analysis.py"
+
+
+rule simulate_missing:
+    input:
+        df=f"{DATA}/df_analysis.pkl",
+        qna=f"{DATA}/gss_qna_all.parquet",
+    output:
+        f"{DATA}/missing_mask_mar.parquet",
+        f"{DATA}/missing_mask_mnar.parquet",
+    shell:
+        "python step6b_simulate_missing.py"
+
+
+rule correlations:
+    input:
+        f"{DATA}/df_analysis_slim.pkl",
+    output:
+        f"{DATA}/corr_with_{CORR_TARGET}.parquet",
+    params:
+        target=CORR_TARGET,
+    shell:
+        "python step6c_compute_correlations.py --target={params.target}"

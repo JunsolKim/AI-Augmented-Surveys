@@ -1,0 +1,306 @@
+# Snakefile — stage-2 Snakemake DAG: train -> predict -> long_to_wide for the
+# DCN models and the MF baseline, plus the robustness targets.
+#
+# MICE (`sbatch sbatch_mice_py_r.sh`) and per-var-year aggregation
+# (`bash run_long_to_varyear.sh`) run outside this DAG.
+#
+# Usage:
+#   cd 2_model-finetuning
+#   snakemake --profile slurm-profile main
+#   snakemake --profile slurm-profile robust
+#   snakemake --profile slurm-profile a6             # one figure
+#   snakemake --profile slurm-profile all            # everything (default)
+#
+# Dry-run any target first: snakemake -n -p <target>
+
+import os
+
+WORKDIR = os.path.dirname(os.path.abspath(workflow.snakefile))
+workdir: WORKDIR
+
+# Filename-safe wildcard values (slash-replaced) → canonical CLI --model_name= strings.
+WILDCARD_TO_MODEL_NAME = {
+    "maicomputer_alpaca-native": "maicomputer/alpaca-native",
+    "EleutherAI_gpt-j-6B":       "EleutherAI/gpt-j-6B",
+    "roberta-large":             "roberta-large",
+}
+
+MAIN_MODELS = list(WILDCARD_TO_MODEL_NAME.keys())
+MAIN_SPLITS = ["impute", "partial", "total"]
+FOLDS       = list(range(10))
+
+# Robustness grids.
+A4_DEMO_POLI = [("False", "False"), ("True", "False"), ("True", "True")]  # D0P1 = main default
+A5_GRID      = [("mar", "dcn"), ("mnar", "dcn"), ("mar", "mf"), ("mnar", "mf")]
+A6_RESAMPLES = ["0.888", "0.777", "0.666", "0.555", "0.444", "0.333", "0.222", "0.111"]
+A9_EXCLUDES  = [10, 20, 30, 40, 50]
+A15_MAX_QS   = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300]
+
+# Conda activation, TF_USE_LEGACY_KERAS and the XLA libdevice path live in env_setup.sh.
+SHELL_PREFIX = (
+    f"cd {WORKDIR} && "
+    "source env_setup.sh"
+)
+
+# --------------------------------------------------------------------------- #
+# Wildcard regex constraints.
+# --------------------------------------------------------------------------- #
+
+wildcard_constraints:
+    model    = r"(maicomputer_alpaca-native|EleutherAI_gpt-j-6B|roberta-large)",
+    split    = r"(impute|partial|total|module|mar|mnar)",
+    k        = r"\d+",
+    resample = r"[01](\.\d+)?",
+    excl     = r"(_exclude\d+)?",
+    nq       = r"(_nq\d+)?",
+    dp       = r"(_(True|False)_(True|False))?",
+
+# --------------------------------------------------------------------------- #
+# Helpers for the optional filename segments (_exclude{n}, _nq{n}, _{demo}_{poli}).
+# step1_train.py::_weight_name and step2_predict.py construct these exactly.
+# --------------------------------------------------------------------------- #
+
+def _cli_flags(wc):
+    parts = []
+    if getattr(wc, "excl", ""):
+        parts.append(f"--n_exclude={wc.excl.removeprefix('_exclude')}")
+    if getattr(wc, "nq", ""):
+        parts.append(f"--max_q={wc.nq.removeprefix('_nq')}")
+    if getattr(wc, "dp", ""):
+        demo, poli = wc.dp.strip("_").split("_")
+        parts.append(f"--use_demo={demo} --use_poli={poli}")
+    return " ".join(parts)
+
+def _is_robust_predict(wc):
+    """True when step2_predict should pass --val_only=True."""
+    if getattr(wc, "excl", "") or getattr(wc, "nq", "") or getattr(wc, "dp", ""):
+        return True
+    if wc.split in ("mar", "mnar"):
+        return True
+    return False
+
+def _val_only_flag(wc):
+    return "--val_only=True" if _is_robust_predict(wc) else ""
+
+# --------------------------------------------------------------------------- #
+# Output-path builders (used by aggregator rules).
+# --------------------------------------------------------------------------- #
+
+def long_path(model, split, k, resample="1", excl="", nq="", dp=""):
+    return (
+        f"data/predictions/{model}_{split}_{k}_10_128_50__resample{resample}"
+        f"{excl}{nq}{dp}_long.parquet"
+    )
+
+def wide_path(model, split, resample="1", dp=""):
+    return (
+        f"data/predictions/{model}_{split}_10_128_50__resample{resample}"
+        f"{dp}_wide.parquet"
+    )
+
+def mf_long_path(split, k, resample="1"):
+    return f"data/predictions/mf_{split}_{k}_10_128_50__resample{resample}_long.parquet"
+
+def mf_wide_path(split):
+    return f"data/predictions/mf_{split}_10_128_50__resample1_wide.parquet"
+
+# =========================================================================== #
+# Core rules (one per pipeline verb).
+# =========================================================================== #
+
+rule train_dcn:
+    """step1_train.py dcn — covers main Alpaca/GPT-J/RoBERTa + A4/A5-dcn/A6-dcn/A8/A9/A15."""
+    output:
+        best    = "data/models/{model}_{split}_k{k}_10_128_50__resample{resample}{excl}{nq}{dp}_best.weights.h5",
+        final   = "data/models/{model}_{split}_k{k}_10_128_50__resample{resample}{excl}{nq}{dp}_final.weights.h5",
+        history = "data/models/history_{model}_{split}_k{k}_10_128_50__resample{resample}{excl}{nq}{dp}.pkl",
+    params:
+        model_name = lambda wc: WILDCARD_TO_MODEL_NAME[wc.model],
+        flags      = _cli_flags,
+    shell:
+        SHELL_PREFIX + " && "
+        "python step1_train.py dcn "
+        "--model_name={params.model_name} "
+        "--split_type={wildcards.split} "
+        "--k={wildcards.k} "
+        "--n_splits=10 "
+        "--resample={wildcards.resample} "
+        "{params.flags}"
+
+rule predict_dcn:
+    """step2_predict.py dcn_fold — val_only=True for robustness variants."""
+    input:
+        "data/models/{model}_{split}_k{k}_10_128_50__resample{resample}{excl}{nq}{dp}_best.weights.h5",
+    output:
+        "data/predictions/{model}_{split}_{k}_10_128_50__resample{resample}{excl}{nq}{dp}_long.parquet",
+    params:
+        model_name = lambda wc: WILDCARD_TO_MODEL_NAME[wc.model],
+        flags      = _cli_flags,
+        val_only   = _val_only_flag,
+    shell:
+        SHELL_PREFIX + " && "
+        "python step2_predict.py dcn_fold "
+        "--model_name={params.model_name} "
+        "--split_type={wildcards.split} "
+        "--k={wildcards.k} "
+        "--n_splits=10 "
+        "--resample={wildcards.resample} "
+        "{params.flags} {params.val_only}"
+
+rule train_mf:
+    """step1_train.py mf — main MF + A5-mf + A6-mf + MF-module (benchmarks)."""
+    output:
+        "data/models/mf_{split}_k{k}_10_50__resample{resample}.pkl",
+    shell:
+        SHELL_PREFIX + " && "
+        "python step1_train.py mf "
+        "--split_type={wildcards.split} "
+        "--k={wildcards.k} "
+        "--n_splits=10 "
+        "--resample={wildcards.resample}"
+
+rule predict_mf:
+    """step2_predict.py mf_fold."""
+    input:
+        "data/models/mf_{split}_k{k}_10_50__resample{resample}.pkl",
+    output:
+        "data/predictions/mf_{split}_{k}_10_128_50__resample{resample}_long.parquet",
+    params:
+        val_only = lambda wc: "--val_only=True" if wc.split in ("mar", "mnar") else "",
+    shell:
+        SHELL_PREFIX + " && "
+        "python step2_predict.py mf_fold "
+        "--split_type={wildcards.split} "
+        "--k={wildcards.k} "
+        "--n_splits=10 "
+        "--resample={wildcards.resample} "
+        "{params.val_only}"
+
+# MICE and Concat-MF predictions are not built by this DAG; MICE runs via
+# `sbatch sbatch_mice_py_r.sh` (writes data/predictions/mice_*_long.parquet).
+
+rule long_to_wide_dcn:
+    """step3_long_to_wide.py wide for Alpaca / GPT-J / RoBERTa."""
+    input:
+        lambda wc: [long_path(wc.model, wc.split, k) for k in FOLDS],
+    output:
+        "data/predictions/{model}_{split}_10_128_50__resample1_wide.parquet",
+    params:
+        model_name = lambda wc: WILDCARD_TO_MODEL_NAME[wc.model],
+    shell:
+        SHELL_PREFIX + " && "
+        "python step3_long_to_wide.py wide "
+        "--model_name={params.model_name} "
+        "--split_type={wildcards.split}"
+
+rule long_to_wide_mf:
+    """step3_long_to_wide.py wide for the MF baseline."""
+    input:
+        lambda wc: [mf_long_path(wc.split, k) for k in FOLDS],
+    output:
+        "data/predictions/mf_{split}_10_128_50__resample1_wide.parquet",
+    shell:
+        SHELL_PREFIX + " && "
+        "python step3_long_to_wide.py wide "
+        "--model_name=mf "
+        "--split_type={wildcards.split}"
+
+# =========================================================================== #
+# Aggregator targets (no shell; purely collect inputs).
+# =========================================================================== #
+
+rule main:
+    """Main pipeline: 3 DCN models × 3 splits + MF × 2 splits, all wide parquets."""
+    input:
+        expand(
+            "data/predictions/{model}_{split}_10_128_50__resample1_wide.parquet",
+            model=MAIN_MODELS, split=MAIN_SPLITS,
+        ),
+        expand(
+            "data/predictions/mf_{split}_10_128_50__resample1_wide.parquet",
+            split=["impute", "partial"],
+        ),
+
+rule a4:
+    """Figure A4: Alpaca DCN × 3 splits × 3 (demo, poli) conditions, k=0, val_only predict.
+
+    D0P1 (use_demo=False, use_poli=True) is the default already covered by `main`,
+    so A4 only generates the other three condition pairs.
+    """
+    input:
+        [
+            long_path(
+                "maicomputer_alpaca-native", split, 0,
+                dp=f"_{demo}_{poli}",
+            )
+            for split in MAIN_SPLITS
+            for demo, poli in A4_DEMO_POLI
+        ],
+
+rule a5:
+    """Figure A5: Alpaca DCN + MF × {mar, mnar}, k=0."""
+    input:
+        [
+            long_path("maicomputer_alpaca-native", split, 0)
+            for split, model in A5_GRID if model == "dcn"
+        ],
+        [
+            mf_long_path(split, 0)
+            for split, model in A5_GRID if model == "mf"
+        ],
+
+rule a6:
+    """Figure A6: Alpaca DCN + MF × 3 splits × 8 resamples, k=0."""
+    input:
+        [
+            long_path("maicomputer_alpaca-native", split, 0, resample=r)
+            for split in MAIN_SPLITS for r in A6_RESAMPLES
+        ],
+        [
+            mf_long_path(split, 0, resample=r)
+            for split in MAIN_SPLITS for r in A6_RESAMPLES
+        ],
+
+rule a8:
+    """Figure A8: Alpaca DCN × module × k=0..9 → wide (also pulls in 10 long parquets via DAG)."""
+    input:
+        "data/predictions/maicomputer_alpaca-native_module_10_128_50__resample1_wide.parquet",
+
+rule a9:
+    """Figure A9: Alpaca DCN × partial × k=3 × n_exclude ∈ {10,20,30,40,50}."""
+    input:
+        [
+            long_path(
+                "maicomputer_alpaca-native", "partial", 3,
+                excl=f"_exclude{n}",
+            )
+            for n in A9_EXCLUDES
+        ],
+
+rule a15:
+    """Figure A15: Alpaca DCN × impute × k=0 × max_q ∈ {5..300}."""
+    input:
+        [
+            long_path(
+                "maicomputer_alpaca-native", "impute", 0,
+                nq=f"_nq{n}",
+            )
+            for n in A15_MAX_QS
+        ],
+
+rule robust:
+    """All appendix robustness figures combined."""
+    input:
+        rules.a4.input,
+        rules.a5.input,
+        rules.a6.input,
+        rules.a8.input,
+        rules.a9.input,
+        rules.a15.input,
+
+rule all:
+    """Default target: main + robust."""
+    input:
+        rules.main.input,
+        rules.robust.input,
+    default_target: True

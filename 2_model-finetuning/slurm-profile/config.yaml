@@ -1,0 +1,42 @@
+# SLURM profile for the stage-2 Snakefile (Snakemake >= 8 with the SLURM
+# executor plugin, both installed by environment.yml).
+# Invoke with: snakemake --profile slurm-profile <target>
+#
+# Set slurm_partition to a partition on your cluster and add any GPU
+# constraint your site requires to the train_dcn / predict_dcn slurm_extra.
+
+executor: slurm
+jobs: 7                             # max concurrent jobs
+rerun-incomplete: true
+keep-going: true
+latency-wait: 60
+printshellcmds: true
+
+default-resources:
+  slurm_partition: "general"
+  mem_mb: 51200                     # 50 GB
+  runtime: 720                      # 12 h (minutes)
+  cpus_per_task: 1
+  slurm_extra: "'--output=logs/slurm-%x-%j.out --error=logs/slurm-%x-%j.err'"
+
+set-resources:
+  train_dcn:
+    mem_mb: 51200
+    runtime: 720
+    slurm_extra: "'--gpus-per-node=1 --output=logs/slurm-%x-%j.out --error=logs/slurm-%x-%j.err'"
+  predict_dcn:
+    mem_mb: 51200
+    runtime: 240
+    slurm_extra: "'--gpus-per-node=1 --output=logs/slurm-%x-%j.out --error=logs/slurm-%x-%j.err'"
+  train_mf:
+    mem_mb: 51200
+    runtime: 720
+  predict_mf:
+    mem_mb: 51200
+    runtime: 240
+  long_to_wide_dcn:
+    mem_mb: 512000                  # 500 GB
+    runtime: 720
+  long_to_wide_mf:
+    mem_mb: 512000
+    runtime: 720

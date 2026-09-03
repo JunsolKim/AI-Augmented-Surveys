@@ -1,0 +1,23 @@
+# Data — downloaded separately (OSF); keep the folder, ignore its contents.
+/data/*
+!/data/.gitkeep
+
+# Generated figures/tables — written by the pipeline; keep the folder, ignore contents.
+/output/*
+!/output/.gitkeep
+
+# Logs / run artifacts
+**/logs/
+logs/
+
+# Python / Snakemake / R build artifacts
+**/__pycache__/
+*.py[cod]
+**/.snakemake/
+.RData
+.Rhistory
+Rplots.pdf
+
+# OS / editor
+.DS_Store
+*.swp

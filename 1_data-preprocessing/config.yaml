@@ -1,0 +1,15 @@
+# Paths are relative to the Snakefile (= 1_data-preprocessing/)
+data_dir: ../data
+
+# External input — assumed to already exist under data_dir
+external:
+  train_vars: ../data/gss_train_vars_corrected_binarized_again.parquet
+
+# Step 9: short name -> HuggingFace model path
+embedding_models:
+  alpaca: maicomputer/alpaca-native
+  gpt:    EleutherAI/gpt-j-6B
+  bert:   roberta-large
+
+# Step 6c target variable (passed via --target)
+correlation_target: marhomo1

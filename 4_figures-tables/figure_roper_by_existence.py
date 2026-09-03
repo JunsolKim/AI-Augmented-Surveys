@@ -1,0 +1,156 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.stats import pearsonr, spearmanr
+
+
+BASE = Path(__file__).resolve().parents[1]
+IN_PQ = BASE / "data" / "fig_table_gen" / "roper_by_existence.parquet"
+OUT_DIR = BASE / "output"
+
+
+def format_p(p: float) -> str:
+    return "p < 2.2e-16" if p < 2.2e-16 else f"p = {p:.2e}"
+
+
+def panel_scatter(ax: plt.Axes, x: np.ndarray, y: np.ndarray,
+                  xlabel: str, ylabel: str, title: str, color: str) -> None:
+    if len(x) < 3:
+        ax.text(0.5, 0.5, f"n={len(x)}", transform=ax.transAxes,
+                ha="center", va="center")
+        ax.set_title(title, loc="left", fontsize=15)
+        return
+
+    diff = x - y
+    r_val, p_val = pearsonr(x, y)
+    sp_val, _    = spearmanr(x, y)
+    mae  = float(np.abs(diff).mean())
+
+    diff_abs = np.abs(diff)
+    for lo, hi, alpha in [(0.00, 0.03, 0.8), (0.03, 0.05, 0.4),
+                          (0.05, np.inf, 0.2)]:
+        mask = (diff_abs >= lo) & (diff_abs < hi)
+        if mask.any():
+            ax.scatter(x[mask], y[mask], s=8, c=color,
+                       alpha=alpha, edgecolors="none")
+
+    ax.text(0.02, 0.96, f"ρ = {sp_val:.2f}, {format_p(p_val)}",
+            transform=ax.transAxes, ha="left", va="top", fontsize=16)
+    ax.text(0.02, 0.86, f"MAE = {mae:.3f}",
+            transform=ax.transAxes, ha="left", va="top", fontsize=16)
+
+    ax.plot([0, 1], [0, 1], "k--", linewidth=0.6, alpha=0.4)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, loc="left", fontsize=18)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect("equal", adjustable="box")
+
+
+def main() -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    df = pd.read_parquet(IN_PQ)
+
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 17,
+        "axes.titlesize": 16,
+        "axes.labelsize": 17,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 16,
+        "figure.titlesize": 16,
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+        "axes.grid": True,
+        "axes.axisbelow": True,
+        "grid.color": "0.92",
+        "grid.linewidth": 0.5,
+    })
+
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.5))
+
+    # Panel A: GSS obs vs Roper obs (requires gss_obs non-null; exists where
+    # GSS asked the same (var, year))
+    d_a = df.loc[df["gss_obs"].notna() & df["roper_mean"].notna()]
+    panel_scatter(
+        axes[0],
+        d_a["gss_obs"].to_numpy(dtype=np.float64),
+        d_a["roper_mean"].to_numpy(dtype=np.float64),
+        xlabel="GSS Observation",
+        ylabel="Roper Observation",
+        title="A. GSS obs vs Roper obs",
+        color="#1A5A7A",
+    )
+
+    # Panel B: Alpaca vs Roper, GSS has same (var, year)
+    d_b = df.loc[df["has_gss_obs_same_year"] == True]  # noqa: E712
+    panel_scatter(
+        axes[1],
+        d_b["alpaca_mean"].to_numpy(dtype=np.float64),
+        d_b["roper_mean"].to_numpy(dtype=np.float64),
+        xlabel="Alpaca Prediction",
+        ylabel="",
+        title="B. Alpaca pred vs Roper obs\n(GSS same year)",
+        color="#1A5F1A",
+    )
+
+    # Panel C: Alpaca vs Roper, GSS has variable but different year
+    d_c = df.loc[df["has_gss_obs_same_year"] == False]  # noqa: E712
+    panel_scatter(
+        axes[2],
+        d_c["alpaca_mean"].to_numpy(dtype=np.float64),
+        d_c["roper_mean"].to_numpy(dtype=np.float64),
+        xlabel="Alpaca Prediction",
+        ylabel="",
+        title="C. Alpaca pred vs Roper obs\n(GSS different year)",
+        color="#8B1A1A",
+    )
+
+    fig.tight_layout()
+
+    out_pdf = OUT_DIR / "figure_roper_by_existence.pdf"
+    out_png = OUT_DIR / "figure_roper_by_existence.png"
+    fig.savefig(out_pdf)
+    fig.savefig(out_png, dpi=300)
+    print(f"saved: {out_pdf}")
+    print(f"saved: {out_png}")
+
+    n_a = int(d_a.shape[0])
+    n_b = int(d_b.shape[0])
+    n_c = int(d_c.shape[0])
+    # Filter thresholds
+    cos_min = 0.85
+    conf_min = 0.85
+    cap_tex = OUT_DIR / "figure_roper_by_existence_caption.tex"
+    caption_body = (
+        r"\caption{Roper Center external validation. "
+        r"Panel~A: GSS-observed vs.\ Roper-observed proportions where GSS "
+        r"asked the same (variable, year). "
+        r"Panel~B: Alpaca prediction vs.\ Roper observation, same subset. "
+        r"Panel~C: Alpaca prediction vs.\ Roper observation on items whose "
+        r"variable appears in GSS validation but at a \emph{different} year "
+        r"(truly unasked for this year). "
+        r"Filters: national-adult samples only, "
+        "cosine similarity $\\geq " + f"{cos_min:.2f}" + "$ and "
+        "LLM-verification confidence $\\geq " + f"{conf_min:.2f}" + "$. "
+        "A $N = " + f"{n_a:,}" + "$; "
+        "B $N = " + f"{n_b:,}" + "$; "
+        "C $N = " + f"{n_c:,}" + "$.}"
+    )
+    cap_tex.write_text(
+        "% Auto-generated by 4_figures-tables/figure_roper_by_existence.py\n"
+        "% Sample sizes:\n"
+        f"%   A (GSS vs Roper)                    : N = {n_a:,}\n"
+        f"%   B (Alpaca vs Roper, GSS same year)  : N = {n_b:,}\n"
+        f"%   C (Alpaca vs Roper, GSS diff year)  : N = {n_c:,}\n\n"
+        + caption_body + "\n"
+    )
+    print(f"saved: {cap_tex}")
+
+
+if __name__ == "__main__":
+    main()
